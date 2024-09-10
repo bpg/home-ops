@@ -1,0 +1,3 @@
+locals {
+  hostname = "devfs"
+}
