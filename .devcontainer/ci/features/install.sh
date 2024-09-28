@@ -36,6 +36,17 @@ do
     curl -fsSL "https://i.jpillora.com/${app}" | bash
 done
 
+# Install latest terraform
+mkdir -p /tmp/terraform
+cd /tmp/terraform
+tfrelease=`curl -s https://api.github.com/repos/hashicorp/terraform/releases/latest | grep tag_name | cut -d: -f2 | tr -d \"\,\v | awk '{$1=$1};1'`
+tfbinary="terraform_${tfrelease}_${TARGETOS}_${TARGETARCH}.zip"
+wget https://releases.hashicorp.com/terraform/${tfrelease}/${tfbinary}
+unzip $tfbinary
+mv terraform /usr/bin/terraform
+cd -
+rm -rf /tmp/terraform
+
 # Create the fish configuration directory
 mkdir -p /home/vscode/.config/fish/{completions,conf.d}
 
