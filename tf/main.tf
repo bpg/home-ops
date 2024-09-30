@@ -16,6 +16,15 @@ module "fileserver" {
   ssh_public_key = local.ssh_public_key
 }
 
+module "k8s-prod" {
+  providers = {
+    proxmox = proxmox.ssh
+  }
+
+  source      = "./modules/k8s-prod"
+  # target_node = "pve1"
+}
+
 # module "test" {
 #   providers = {
 #     proxmox = proxmox.ssh
