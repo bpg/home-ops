@@ -16,7 +16,7 @@ spec:
           app:
             image:
               repository: docker.io/oliver006/redis_exporter
-              tag: v1.89.0
+              tag: v1.91.1
             args:
               # Watches the paperless celery queue depth so a wedged worker
               # (e.g. after a dragonfly master failover) is visible in Prometheus.
