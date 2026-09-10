@@ -8,8 +8,8 @@ This repo runs multiple Minecraft servers in the `minecraft` namespace using Git
   - Exposed as a **Cilium `LoadBalancer`** on a fixed LAN IP
   - Routes players to backend servers based on the requested hostname (SRV / SNI-style routing)
 - **Minecraft servers**:
-  - **`survival`**: itzg Minecraft chart (`itzg/minecraft-server-charts`)
-  - **`modded`**: deployed via `bjw-s/app-template` chart running `ghcr.io/itzg/minecraft-server`
+  - **`survival`**: Paper, itzg Minecraft chart (`itzg/minecraft-server-charts`). Online-mode, no whitelist. **LAN / WireGuard only.**
+  - **`modded`**: Fabric + Modrinth mods, `bjw-s/app-template` chart running `ghcr.io/itzg/minecraft-server`. Offline-mode, whitelist enforced. **Reachable from the internet** as `modded.${SECRET_DOMAIN}`.
 - **Web UIs (BlueMap)**: exposed via **Gateway API `HTTPRoute`** through Envoy Gateway
   - Default in this repo: **internal-only** (uses `envoy-internal` in the `network` namespace)
 - **Backups**: Volsync component is enabled for Minecraft apps (PVC + ReplicationSource/Destination pattern)
@@ -21,18 +21,28 @@ This repo runs multiple Minecraft servers in the `minecraft` namespace using Git
 
 ```mermaid
 flowchart LR
-  client[Internet Minecraft client] -->|TCP 25565| edge[Home router / NAT]
-  edge -->|port-forward TCP 25565| lb["Cilium LB IP - 192.168.1.40"]
+  client[Internet Minecraft client] -->|"modded.domain → CNAME apex.bpghome.net (ddclient DDNS)"| edge["OPNsense WAN (PPPoE)"]
+  edge -->|"Destination NAT TCP 25565 → 192.168.1.40"| lb["Cilium LB IP - 192.168.1.40"]
+  lanClient[LAN client] -->|"dnsmasq host override → 192.168.1.40"| lb
   lb --> routerSvc["minecraft-router Service (LoadBalancer)"]
   routerSvc --> routerPod[mc-router Pod]
 
-  routerPod -->|routes by requested host| survival[Service: survival]
-  routerPod -->|routes by requested host| modded[Service: modded]
+  routerPod -->|"host = modded.domain"| modded[Service: modded]
+  routerPod -->|"host = mc.domain (LAN-only name)"| survival[Service: survival]
+  routerPod -->|"bare IP / unknown host"| drop[connection closed]
 ```
 
 Notes:
 
-- The cluster provides the **LAN entrypoint** (`192.168.1.40:25565`). Public access is achieved by **router port-forwarding**.
+- The cluster provides the **LAN entrypoint** (`192.168.1.40:25565`). LAN clients resolve both `mc.` and `modded.` to that IP via OPNsense host overrides.
+- **Public path (modded only, since 2026-09-10)**:
+  - `modded.${SECRET_DOMAIN}` is a **DNS-only** (not proxied) Cloudflare CNAME to `apex.bpghome.net`, created by external-dns from `modded/app/dnsendpoint.yaml`.
+  - `apex.bpghome.net` is kept current by the **os-ddclient** plugin on OPNsense (PPPoE address can change).
+  - OPNsense **Firewall → NAT → Destination NAT** rule "Minecraft modded (mc-router)": WAN, TCP `25565` → `192.168.1.40:25565`, firewall rule = Pass. If the rule is saved but `pfctl -sn | grep 25565` shows nothing, run `configctl filter reload`.
+  - mc-router routes on the hostname the client typed, so the CNAME chain is transparent.
+- `mc.${SECRET_DOMAIN}` has **no public DNS record**; survival is only reachable from the LAN or WireGuard.
+- **mc-router MUST NOT set `DEFAULT`.** With the port forwarded, a default backend would send every bare-IP / unknown-hostname connection (scanners, the ISP reverse-DNS name, status checkers) to that server. Survival was briefly exposed this way on 2026-09-10.
+- Verify from outside without leaving the LAN: `curl -s https://api.mcstatus.io/v2/status/java/modded.<domain>` should be `online: true`; the same query for the bare WAN IP and for `mc.<domain>` must be `online: false`.
 - The router API (8080) is **not required** for game traffic.
 
 ### Web UIs (BlueMap) (LAN → Envoy Gateway → HTTPRoute → service)
@@ -72,8 +82,14 @@ This repo avoids committing real domains. Hostnames use `${SECRET_DOMAIN}`, whic
 Examples:
 
 - `minecraft-router` API: `minecraft-router.${SECRET_DOMAIN}` (internal HTTPRoute)
-- `survival` BlueMap: `mc.${SECRET_DOMAIN}` (internal HTTPRoute)
-- `modded` BlueMap: `modded.${SECRET_DOMAIN}` (internal HTTPRoute)
+- `survival` game: `mc.${SECRET_DOMAIN}` (LAN host override only, no public record)
+- `modded` game: `modded.${SECRET_DOMAIN}` (LAN host override + public DNS-only CNAME via `DNSEndpoint`)
+- `survival` BlueMap: `bluemap-mc.${SECRET_DOMAIN}` (internal HTTPRoute)
+- `modded` BlueMap: `bluemap-modded.${SECRET_DOMAIN}` (internal HTTPRoute)
+
+external-dns runs with `--cloudflare-proxied` (everything proxied by default). A game hostname must opt out with
+`providerSpecific: external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"` — note the **`alpha`** prefix; external-dns v0.21
+silently ignores the newer unprefixed key and the record comes up proxied, which breaks raw-TCP Minecraft.
 
 ## Components in this directory
 
@@ -82,11 +98,13 @@ Examples:
 - Provides a **single stable IP** for game clients on port `25565`.
 - Backend servers set `mc-router.itzg.me/externalServerName` so mc-router can route correctly.
 - The router also exposes an **HTTP API + Prometheus metrics** on port `8080` (kept **internal-only** in this repo).
+- **No `DEFAULT` backend** (see the game-traffic notes above). Unknown hostnames are dropped, which is what keeps survival off the internet.
   - Upstream docs: [`itzg/mc-router`](https://github.com/itzg/mc-router)
 
 ### `survival/`
 
-- Runs Paper (`TYPE: PAPER`) via the itzg chart.
+- Runs Paper (`TYPE: PAPER`) via the itzg chart. Online-mode, no whitelist.
+- **Not published**: no public DNS record, and mc-router has no default route to it. LAN / WireGuard only.
 - Exposes:
   - Game service (routed through `minecraft-router`)
   - BlueMap on port `8100` via an internal `HTTPRoute`
@@ -94,7 +112,14 @@ Examples:
 
 ### `modded/`
 
-- Runs a modded server (Paper + Modrinth projects) using `bjw-s/app-template`.
+- Runs Fabric (`TYPE: FABRIC`) with Modrinth-managed mods (`MODRINTH_PROJECTS`) using `bjw-s/app-template`.
+- **Offline-mode** (`ONLINE_MODE: false`): players are identified by the offline UUID `md5("OfflinePlayer:<name>")`.
+  Both `OPS` and `WHITELIST` in the HelmRelease are lists of these UUIDs (comment maps UUID → name). Compute one with:
+  `python3 -c 'import hashlib,uuid,sys;print(uuid.UUID(bytes=hashlib.md5(("OfflinePlayer:"+sys.argv[1]).encode()).digest(),version=3))' <name>`
+  Do **not** list bare usernames: itzg resolves them to online Mojang UUIDs, which never match here.
+- **Whitelist enforced** (`EXISTING_WHITELIST_FILE: SYNCHRONIZE`, `ENFORCE_WHITELIST: true`): `whitelist.json` is rewritten from Git on every start, so removing a UUID revokes access.
+- **Published to the internet** as `modded.${SECRET_DOMAIN}` (see game-traffic notes). Adding a player = add their offline UUID to `WHITELIST`, commit, Flux restarts the pod.
+- Mod downloads happen at **every startup** from `api.modrinth.com` / `cdn.modrinth.com`. Zenarmor on OPNsense has false-positived `modrinth.com` twice (DNS rewrite 2026-07, TLS reset 2026-09); the whitelist entry lives in Zenarmor's `global_sites` and is **wiped by an OPNsense reinstall**. Symptom: pod CrashLoopBackOff in the `modrinth` init step with `Connection closed while SSL/TLS handshake was in progress`.
 - Exposes:
   - Game service (routed through `minecraft-router`)
   - BlueMap on port `8100` via an internal route (as configured in the Helm values)
@@ -159,7 +184,11 @@ Use this when you want maximum flexibility (multiple containers, sidecars, custo
 - **mc-router routing**:
   - Pick a hostname: `<new-server>.${SECRET_DOMAIN}`
   - Ensure the backend server announces the hostname to mc-router (e.g., set `mc-router.itzg.me/externalServerName: <new-server>.${SECRET_DOMAIN}` on the Service/Pod per the chart/docs pattern)
-  - If you want “connect by IP” to land on the new server, update `minecraft-router` `DEFAULT` (otherwise hostname-based routing is preferred)
+  - Do **not** add a `minecraft-router` `DEFAULT` for "connect by IP": port 25565 is forwarded from the internet, so a default backend is exposed to every scanner. Hostname routing only.
+- **Publishing to the internet (optional)**:
+  - Add a `DNSEndpoint` (copy `modded/app/dnsendpoint.yaml`): CNAME `<new-server>.${SECRET_DOMAIN}` → `apex.bpghome.net`, with the `alpha`-prefixed `cloudflare-proxied: "false"` property
+  - No new NAT rule is needed; the existing 25565 forward reaches mc-router, which routes on hostname
+  - Only publish servers that are offline-mode **with a whitelist**, or online-mode with a whitelist
 - **BlueMap (optional)**:
   - Expose via `HTTPRoute` through `envoy-internal` (internal-only) or `envoy-external` (public) in the `network` namespace
   - Use `${SECRET_DOMAIN}` placeholders (no hardcoded domains in Git)
@@ -355,6 +384,14 @@ flux reconcile ks minecraft-router -n minecraft --with-source
 - If game traffic isn’t reaching a server:
   - Verify `minecraft-router` Service has the expected LB IP (`192.168.1.40`)
   - Verify each server sets `mc-router.itzg.me/externalServerName` to the expected hostname
+  - `kubectl -n minecraft logs deploy/minecraft-router` shows `Connecting to backend ... server=<host>` per connection, or `Unable to find registered backend` for unknown hosts
+- If `modded` isn’t reachable from the internet (but works on the LAN):
+  - `dig @1.1.1.1 modded.<domain>` must return the CNAME to `apex.bpghome.net` and then the current WAN IP (not a `172.64.x.x` / `104.x` Cloudflare edge IP — that means the record is proxied)
+  - `dig @1.1.1.1 apex.bpghome.net` must equal the OPNsense WAN address; if not, check the os-ddclient plugin on OPNsense
+  - `ssh root@opnsense 'pfctl -sn | grep 25565'` must show the `rdr pass` rule; if the rule exists in the UI but not here, `configctl filter reload`
+  - `curl -s https://api.mcstatus.io/v2/status/java/modded.<domain>` gives an outside-in answer (cached ~1 min)
+- If `modded` crashloops right after a restart, check for the Modrinth/Zenarmor TLS block described under `modded/` above before touching the HelmRelease
+- If a whitelisted player is refused on `modded`, recompute their offline UUID from the exact username (case-sensitive) and compare with `/data/whitelist.json` in the pod
 - If BlueMap isn’t reachable:
   - Confirm the `HTTPRoute` parentRef uses `envoy-internal` and `namespace: network`
   - Check Envoy Gateway is healthy in the `network` namespace
