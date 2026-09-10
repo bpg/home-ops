@@ -1,0 +1,19 @@
+---
+# yaml-language-server: $schema=https://kubernetes-schemas.pages.dev/externaldns.k8s.io/dnsendpoint_v1alpha1.json
+apiVersion: externaldns.k8s.io/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: modded
+spec:
+  endpoints:
+    # Public game hostname. Points at the ddclient-managed DDNS name on OPNsense so the
+    # WAN IP never lives in Git. Game traffic reaches mc-router via the OPNsense port
+    # forward (TCP 25565 -> 192.168.1.40); mc-router routes on the hostname the client typed.
+    - dnsName: "modded.${SECRET_DOMAIN}"
+      recordType: CNAME
+      recordTTL: 300
+      targets: ["apex.bpghome.net"]
+      providerSpecific:
+        # Minecraft is raw TCP; Cloudflare's proxy must stay off for this record.
+        - name: external-dns.kubernetes.io/cloudflare-proxied
+          value: "false"
