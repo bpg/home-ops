@@ -15,5 +15,6 @@ spec:
       targets: ["apex.bpghome.net"]
       providerSpecific:
         # Minecraft is raw TCP; Cloudflare's proxy must stay off for this record.
-        - name: external-dns.kubernetes.io/cloudflare-proxied
+        # external-dns v0.21 still reads the "alpha" prefix; the unprefixed key is ignored.
+        - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
           value: "false"
