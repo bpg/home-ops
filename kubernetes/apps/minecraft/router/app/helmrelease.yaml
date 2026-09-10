@@ -44,10 +44,11 @@ spec:
               IN_KUBE_CLUSTER: "true"
               API_BINDING: ":8080"
               PORT: &port 25565
-              # Fallback route when a client connects using an unrecognized server address
-              # (e.g., using the public IP instead of mc.${SECRET_DOMAIN}).
+              # No DEFAULT backend on purpose: port 25565 is forwarded from the internet, and
+              # only modded.${SECRET_DOMAIN} is published. Clients that connect by bare IP or an
+              # unknown hostname (scanners, or the ISP's reverse-DNS name) must be dropped
+              # rather than fall through to survival, which is LAN/WireGuard-only.
               # Ref: https://github.com/itzg/mc-router
-              DEFAULT: "survival-minecraft:25565"
               AUTO_SCALE_UP: false
               CONNECTION_RATE_LIMIT: 10
               METRICS_BACKEND: prometheus
