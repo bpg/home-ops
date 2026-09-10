@@ -23,7 +23,7 @@ spec:
           app:
             image:
               repository: bellamy/wallos
-              tag: 5.4.2
+              tag: 5.7.1
             env:
               TZ: "America/Toronto"
             probes:
