@@ -61,6 +61,17 @@ spec:
               # ff7736d8-12fd-3a9e-8ebf-358ee00b02b4 = alix_kb
               OPS: "ff7736d8-12fd-3a9e-8ebf-358ee00b02b4"
               OVERRIDE_OPS: "true"
+              # Whitelist uses the same offline UUIDs (compute with
+              # python3 -c 'import hashlib,uuid,sys;print(uuid.UUID(bytes=hashlib.md5(("OfflinePlayer:"+sys.argv[1]).encode()).digest(),version=3))' <name>).
+              # Setting WHITELIST enables white-list in server.properties. SYNCHRONIZE rewrites
+              # whitelist.json from this list on every startup, so removals here revoke access.
+              # db2236ef-809f-3fd7-a63a-5ab650ab6c83 = MrPurgen
+              # ff7736d8-12fd-3a9e-8ebf-358ee00b02b4 = alix_kb
+              WHITELIST: |
+                db2236ef-809f-3fd7-a63a-5ab650ab6c83
+                ff7736d8-12fd-3a9e-8ebf-358ee00b02b4
+              EXISTING_WHITELIST_FILE: SYNCHRONIZE
+              ENFORCE_WHITELIST: "true"
               MAX_PLAYERS: 40
               KEEP_INVENTORY: true
               ENABLE_ROLLING_LOGS: false
